@@ -42,6 +42,25 @@ canvas.addEventListener('pointerdown', () => {
   audio.startAmbient();
 });
 
+const muteBtn = document.getElementById('mute');
+const volSlider = document.getElementById('vol');
+if (muteBtn) {
+  muteBtn.addEventListener('click', () => {
+    audio.init();
+    audio.startAmbient();
+    audio.toggleMute();
+    muteBtn.textContent = audio.musicEl && audio.musicEl.muted ? 'Música: Off' : 'Música: On';
+  });
+}
+if (volSlider) {
+  volSlider.addEventListener('input', () => {
+    audio.init();
+    audio.startAmbient();
+    const value = Number(volSlider.value);
+    audio.setVolume(value / 250);
+  });
+}
+
 class Particle {
   constructor() {
     this.reset(true);
@@ -238,6 +257,9 @@ class Player {
   }
 }
 
+const zombieImg = new Image();
+zombieImg.src = 'zombie.png';
+
 class Enemy {
   constructor(type) {
     this.type = type;
@@ -251,6 +273,12 @@ class Enemy {
     this.timer = 0;
     this.jumpT = 0;
     if (this.type === 'rock') this.vx = (Math.random() < 0.5 ? -1 : 1) * (60 + Math.random() * 80 + level * 10);
+    if (this.type === 'zombie') {
+      this.w = 40;
+      this.h = 60;
+      this.y = groundY - this.h;
+      this.speed = 100 + Math.random() * 40 + level * 5;
+    }
   }
   update(dt) {
     if (this.dead) {
@@ -272,13 +300,30 @@ class Enemy {
         this.y = groundY - this.h;
         this.vy = 0;
       }
+    } else if (this.type === 'zombie') {
+      const dx = player.x - this.x;
+      if (Math.abs(dx) > 5) {
+        this.vx = Math.sign(dx) * this.speed;
+      } else {
+        this.vx = 0;
+      }
+      this.x += this.vx * dt;
+      this.vy += gravity * dt;
+      this.y += this.vy * dt;
+      if (this.y + this.h >= groundY) {
+        this.y = groundY - this.h;
+        this.vy = 0;
+      }
     }
   }
   draw() {
     if (this.dead) return;
     ctx.save();
     ctx.translate(this.x + this.w / 2, this.y + this.h);
+    if (this.type === 'zombie' && this.vx < 0) ctx.scale(-1, 1);
+    else ctx.translate(0, 0); // Placeholder for consistency
     ctx.translate(-this.w / 2, -this.h);
+    
     if (this.type === 'flower') {
       ctx.fillStyle = '#356d3a';
       ctx.fillRect(this.w / 2 - 3, 12, 6, this.h - 12);
@@ -311,6 +356,16 @@ class Enemy {
       ctx.fill();
       ctx.fillStyle = '#d9b77b';
       ctx.fillRect(this.w / 2 - 6, 14, 12, this.h - 14);
+    } else if (this.type === 'zombie') {
+      if (zombieImg.complete && zombieImg.naturalWidth > 0) {
+        ctx.drawImage(zombieImg, 0, 0, this.w, this.h);
+      } else {
+        // Fallback if image not loaded
+        ctx.fillStyle = '#2e8b57'; // SeaGreen
+        ctx.fillRect(0, 0, this.w, this.h);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(this.w/4, this.h/4, this.w/2, this.h/4); // Eyes/Mouth area
+      }
     }
     ctx.restore();
   }
@@ -502,6 +557,7 @@ const audio = {
   master: null,
   ambientGain: null,
   ambientNode: null,
+  musicEl: null,
   init() {
     if (this.ctx) return;
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -513,31 +569,26 @@ const audio = {
   },
   startAmbient() {
     if (!this.ctx || this.ambientNode) return;
-    const len = 2;
-    const sr = this.ctx.sampleRate;
-    const buf = this.ctx.createBuffer(1, len * sr, sr);
-    const data = buf.getChannelData(0);
-    let v = 0;
-    for (let i = 0; i < data.length; i++) {
-      v += (Math.random() * 2 - 1) * 0.02;
-      v *= 0.98;
-      data[i] = v;
-    }
-    const src = this.ctx.createBufferSource();
-    src.buffer = buf;
-    src.loop = true;
-    const bp = this.ctx.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.frequency.value = 500;
-    bp.Q.value = 0.4;
+    const el = new Audio('brujo.mp3');
+    el.loop = true;
+    el.preload = 'auto';
+    el.addEventListener('error', () => {
+      console.error('No se pudo cargar brujo.mp3');
+    });
+    const src = this.ctx.createMediaElementSource(el);
     const g = this.ctx.createGain();
-    g.gain.value = 0.08;
-    src.connect(bp);
-    bp.connect(g);
+    g.gain.value = 0.25;
+    src.connect(g);
     g.connect(this.master);
-    src.start();
+    
+    // Resume context to ensure autoplay works
+    this.ctx.resume().then(() => {
+        el.play().catch(e => console.error("Audio play failed:", e));
+    });
+
     this.ambientNode = src;
     this.ambientGain = g;
+    this.musicEl = el;
   },
   shoot(kind) {
     if (!this.ctx) return;
@@ -588,17 +639,26 @@ const audio = {
     lp.connect(g);
     g.connect(this.master);
     src.start();
-  }
+  },
+  pauseMusic() { if (this.musicEl) this.musicEl.pause(); },
+  resumeMusic() { 
+      if (this.ctx) this.ctx.resume(); 
+      if (this.musicEl) this.musicEl.play().catch(e => console.error("Resume failed:", e)); 
+  },
+  toggleMute() { if (this.musicEl) this.musicEl.muted = !this.musicEl.muted; },
+  setVolume(v) { if (this.ambientGain) this.ambientGain.gain.value = Math.max(0, Math.min(1, v)); }
 };
 function damageFor(type) {
   if (type === 'rock') return 12;
   if (type === 'mushroom') return 16;
+  if (type === 'zombie') return 20;
   return 8;
 }
 
 function getEnemyScore(type) {
   if (type === 'rock') return 15;
   if (type === 'mushroom') return 20;
+  if (type === 'zombie') return 25;
   return 10;
 }
 
